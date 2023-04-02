@@ -3,7 +3,7 @@ import asyncio
 from clamdavdb import ClamAVDB, ClamAVDBFileMetadata, NotRegularFileError
 import os
 import time
-import sys
+from asyncio import Task
 
 def sec_to_interval_string(sec: int) -> str:
     days_left, sec_left = divmod(sec, 60*60*24)
@@ -82,6 +82,12 @@ async def main():
     logger = Logger(len(files_to_scan))
 
     tasks = set()
+
+    ok_fh = open("clamav-ok.txt", 'w')
+    infected_fh = open("clamav-infected.txt", 'w')
+    error_fh = open("clamav-error.txt", 'w')
+    fs_error_fh = open("clamav-fs-error.txt", 'w')
+
     while len(files_to_scan) > 0 or len(tasks) > 0:
         # TODO
         while len(tasks) < args.max_scans and len(files_to_scan) > 0:
@@ -91,14 +97,27 @@ async def main():
 
         completed, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
         tasks = pending
+        task: Task[ClamAVDBFileMetadata]
         for task in completed:
             try:
                 result:ClamAVDBFileMetadata = await task
                 logger.log(str(result))
+                if result.status == 'OK':
+                    print(result.log_line(), file=ok_fh)
+                elif result.status == 'FOUND':
+                    print(result.log_line(), file=infected_fh)
+                else:
+                    assert result.status == 'ERROR'
+                    print(result.log_line(), file=error_fh)
+
             except NotRegularFileError as e:
-                logger.log(f"Not Regular File: {e}", force=True)
+                msg = f"Not Regular File: {e}"
+                logger.log(msg, force=True)
+                print(msg, file=fs_error_fh)
             except FileNotFoundError as e:
-                logger.log(f"File Not Found: {e}", force=True)
+                msg = f"File Not Found: {e}"
+                logger.log(msg, force=True)
+                print(msg, file=fs_error_fh)
 
 
 

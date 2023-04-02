@@ -17,6 +17,7 @@ class ClamAVDBFileMetadata:
     path: str
     mtime_epoch: int
     filesize: int
+    pulled_from_cache: bool
     status: str
     scanned_at: datetime
     scan_results: str
@@ -27,6 +28,10 @@ class ClamAVDBFileMetadata:
     def __str__(self):
         contents = self.scan_results
         return f"{self.path} ({self.status}: {contents})"
+    
+    def log_line(self) -> str:
+        cache_str = "FROM CACHE" if self.pulled_from_cache else "SCANNED"
+        return f"{cache_str}:{self.scanned_at}|{self.path}|mtime:{self.mtime_epoch}|{self.filesize} bytes|{self.status}|{self.scan_results}"
 
 def adapt_bool(value: bool) -> bytes:
     return b"true" if value else b"false"
@@ -72,7 +77,11 @@ class ClambScanMgr:
             with open(config_fullpath) as fh:
                 config_template_contents = fh.read()
             config_template = Template(config_template_contents)
-            config = config_template.safe_substitute(socket_path=self.socket_path)
+
+            max_threads = os.cpu_count()
+            assert max_threads is not None
+            max_threads += 2
+            config = config_template.safe_substitute(socket_path=self.socket_path, max_threads=max_threads)
 
             config_fullpath = f"/tmp/clamd-{os.getpid()}.conf"
             with open(config_fullpath, 'w') as fh:
@@ -135,7 +144,7 @@ class ClambScanMgr:
         assert match is not None
         filename, inner_message, status = match.groups()
         assert filename == path
-        result = ClamAVDBFileMetadata(path, int(stat.st_mtime), stat.st_size, status, datetime.fromtimestamp(time.time()), "\n".join(lines))
+        result = ClamAVDBFileMetadata(path, int(stat.st_mtime), stat.st_size, False, status, datetime.fromtimestamp(time.time()), "\n".join(lines))
 
         # if not result.ok():
         #     print(f"{path}:({status}):{inner_message}")
@@ -168,7 +177,7 @@ class ClamAVDB:
             raise KeyError(path)
 
         mtime_epoch, filesize, status, scanned_at, scan_results = row
-        result = ClamAVDBFileMetadata(path, mtime_epoch, filesize, status, scanned_at, scan_results)
+        result = ClamAVDBFileMetadata(path, mtime_epoch, filesize,True, status, scanned_at, scan_results)
         return result
 
     async def init_scanner(self):
