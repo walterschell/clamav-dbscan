@@ -4,6 +4,13 @@ from clamdavdb import ClamAVDB, ClamAVDBFileMetadata, NotRegularFileError
 import os
 import time
 from asyncio import Task
+import socket
+import fcntl
+import struct
+import json
+
+WATCHER_UNIX_DOMAIN_SOCKET_PATH = "/tmp/fswatcher.sock"
+
 
 def sec_to_interval_string(sec: int) -> str:
     days_left, sec_left = divmod(sec, 60*60*24)
@@ -46,6 +53,98 @@ class Logger:
             self.last_count = self.count
 
 
+async def read_unix_domain_socket(sock: socket.socket) -> bytes:
+    loop = asyncio.get_event_loop()
+    result = loop.create_future()
+    def on_unix_domain_socket_read_ready():
+        SIOCINQ:int =  0x541B
+        raw_data_available = bytearray(struct.calcsize('q'))
+        try:
+            fcntl.ioctl(sock, SIOCINQ, raw_data_available, True)
+            data_available, = struct.unpack('q', raw_data_available)
+            print(f"Attempting to read {data_available} bytes")
+            data = sock.recv(data_available)
+            result.set_result(data)
+        except Exception as e:
+            result.set_exception(e)
+
+        loop.remove_reader(sock.fileno())
+
+    loop.add_reader(sock.fileno(), on_unix_domain_socket_read_ready)
+    return await result
+
+class DeferredScanManager:
+    def __init__(self, clamavdb: ClamAVDB) -> None:
+        self.scans: dict[str, Task] = {}
+        self.paths_by_scan: dict[Task, str] = {}
+        self.clamavdb = clamavdb
+        self.reaper_task = None
+
+    async def start(self):
+        async def reaper():
+            while True:
+
+                completed, _ = await asyncio.wait(self.scans.values(), return_when=asyncio.FIRST_COMPLETED)
+                for task in completed:
+                    try:
+                        await task
+                    except Exception as e:
+                        print(f"Error scanning {self.paths_by_scan[task]}: {type(e)} - {e}")
+                    del self.scans[self.paths_by_scan[task]]
+                    del self.paths_by_scan[task]
+
+        self.reaper_task = asyncio.create_task(reaper())
+
+    
+
+
+    async def schedule_file_scan(self, file_path: str):
+        if file_path in self.scans:
+            return
+        task = asyncio.create_task(self.deferred_scan_file(file_path))
+        self.scans[file_path] = task
+        self.paths_by_scan[task] = file_path
+
+    async def cancel_file_scan(self, file_path: str):
+        if file_path in self.scans:
+            self.scans[file_path].cancel()
+
+
+    async def deferred_scan_file(self, file_path: str):
+        print(f"Will scan {file_path} after 10s delay")
+        try:
+            await asyncio.sleep(10)
+
+            try:
+                metadata = await self.clamavdb.scan_file(file_path)
+                print(f"Scanned {file_path} - {metadata}")
+            except NotRegularFileError:
+                print(f"Skipping {file_path} - Not a regular file")
+        except asyncio.CancelledError:
+            print(f"Cancelled scan of {file_path}")
+
+
+async def on_demand_watcher(clamavdb: ClamAVDB):
+    scan_manager = DeferredScanManager(clamavdb)
+    await scan_manager.start()
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    s.connect(WATCHER_UNIX_DOMAIN_SOCKET_PATH)
+    s.setblocking(False)
+    while True:
+        data = await read_unix_domain_socket(s)
+        if data == b'':
+            break
+        watch_data = json.loads(data.decode('utf-8'))
+        for file_event_dict in watch_data['events']:
+            path = file_event_dict['path']
+            operation = file_event_dict['operation']
+            if operation == 'close_for_write' or operation == 'move_to':
+                await scan_manager.schedule_file_scan(path)
+            elif operation == 'remove' or operation == 'move_from':
+                await scan_manager.cancel_file_scan(path)
+                clamavdb.remove_file(path)
+
+
 async def main():
     cpu_count = os.cpu_count()
     assert cpu_count is not None
@@ -54,11 +153,22 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-d', '--db-path', default=os.path.join(here, "clamav-scan-results.sqlite3"))
     parser.add_argument('-m', '--max-scans', default=max_scans_default)
-    parser.add_argument('path')
+    parser.add_argument('-w', '--watch', action='store_true', help="Watch for changes and scan on demand")
+    parser.add_argument('path', nargs='?', default=None)
 
     args = parser.parse_args()
+
+    if not args.watch and args.path is None:
+        parser.error("Must specify path to scan, or use --watch to watch for changes")
+    
+
+
     clamavdb = ClamAVDB(args.db_path)
     await clamavdb.init_scanner()
+
+    if args.watch:
+        await on_demand_watcher(clamavdb)
+        return
 
     topdev = os.stat(args.path).st_dev
 

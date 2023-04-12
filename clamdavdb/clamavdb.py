@@ -180,6 +180,9 @@ class ClamAVDB:
         result = ClamAVDBFileMetadata(path, mtime_epoch, filesize,True, status, scanned_at, scan_results)
         return result
 
+    def __delitem__(self, path):
+        self.remove_file(path)
+
     async def init_scanner(self):
         await self.scanner.ensure_clamd()
 
@@ -212,3 +215,8 @@ class ClamAVDB:
                             ))
         # print(f"Successfully added {path} to cache")
         return result
+    
+    def remove_file(self, path: str) -> None:
+        with self.db:
+            self.db.execute("DELETE FROM files WHERE path = ?", (path,))
+        print(f"Removed {path} from cache")
