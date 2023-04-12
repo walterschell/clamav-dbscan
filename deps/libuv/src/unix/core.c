@@ -1081,7 +1081,7 @@ int uv__dup2_cloexec(int oldfd, int newfd) {
 #endif
 }
 
-
+#ifdef LIBUV_NEED_LIBC
 int uv_os_homedir(char* buffer, size_t* size) {
   uv_passwd_t pwd;
   size_t len;
@@ -1116,7 +1116,7 @@ int uv_os_homedir(char* buffer, size_t* size) {
 
   return 0;
 }
-
+#endif
 
 int uv_os_tmpdir(char* buffer, size_t* size) {
   const char* buf;
@@ -1168,7 +1168,7 @@ return_buffer:
   return 0;
 }
 
-
+#ifdef LIBUV_NEED_LIBC
 static int uv__getpwuid_r(uv_passwd_t *pwd, uid_t uid) {
   struct passwd pw;
   struct passwd* result;
@@ -1328,7 +1328,7 @@ int uv_os_get_passwd(uv_passwd_t* pwd) {
 int uv_os_get_passwd2(uv_passwd_t* pwd, uv_uid_t uid) {
   return uv__getpwuid_r(pwd, uid);
 }
-
+#endif
 
 int uv_translate_sys_error(int sys_errno) {
   /* If < 0 then it's already a libuv error. */
