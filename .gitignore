@@ -1,0 +1,7 @@
+clamav-error.txt
+clamav-fs-error.txt
+clamav-infected.txt
+clamav-ok.txt
+clamav-scan-results.sqlite3
+clamav-scan-results.sqlite3-shm
+clamav-scan-results.sqlite3-wal
