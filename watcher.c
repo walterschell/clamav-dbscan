@@ -152,7 +152,7 @@ char *filepath_from_fanotify_even_metadata(struct fanotify_event_metadata *metad
                 printf("Failed to read link\n");
                 path = strdup("???");
             }
-
+            close(fd);
 
             char *name = (char *) (((uintptr_t) (file_handle + 1)) + file_handle->handle_bytes);
             //printf("DFID_NAME: %s\n", name);
@@ -429,14 +429,12 @@ void on_fs_event(uv_poll_t *handle, UNUSED int status, UNUSED int events)
             if (filepath == NULL)
             {
                 printf("Failed to get filepath\n");
-                UV_TERMINATE_LOOP(handle->loop, 1);
+                goto loop_end;
             }
             if (strncmp(filepath, loop_state->compare_path, strlen(loop_state->compare_path)) != 0)
             {
                 printf("Skipping %s\n", filepath);
-                metadata = FAN_EVENT_NEXT(metadata, buflen);
-                free(filepath);
-                continue;
+                goto loop_end;
             }
             operation_type_t op = OP_UNKNOWN;
             if (metadata->mask & FAN_CLOSE_WRITE)
@@ -459,12 +457,14 @@ void on_fs_event(uv_poll_t *handle, UNUSED int status, UNUSED int events)
                 op = OP_MOVE_FROM;
             }
 
-            metadata = FAN_EVENT_NEXT(metadata, buflen);
             cJSON *json_event = cJSON_CreateObject();
             cJSON_AddStringToObject(json_event, "path", filepath);
             cJSON_AddStringToObject(json_event, "operation", operation_type_to_string[op]);
             cJSON_AddItemToArray(json_events, json_event);
+loop_end:
             free(filepath);
+            metadata = FAN_EVENT_NEXT(metadata, buflen);
+
         }
         if (cJSON_GetArraySize(json_events) == 0)
         {
@@ -539,7 +539,10 @@ int main(int argc, char **argv) {
 
     char *compare_path = calloc(1, strlen(canonical_path) + 2);
     strcpy(compare_path, canonical_path);
-    strcat(compare_path, "/");
+    if (strlen(compare_path) > 1)
+    {
+        strcat(compare_path, "/");
+    }
     free(canonical_path);
 
     int fs_fd = open(path, O_DIRECTORY | O_RDONLY);
@@ -625,6 +628,7 @@ int main(int argc, char **argv) {
     }
     free(loop_state.compare_path);
 
+    close(listenfd);
     close(fd);
     close(fs_fd);
 
