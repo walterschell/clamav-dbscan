@@ -17,9 +17,17 @@
 #include <sys/queue.h>
 #include <assert.h>
 #include <errno.h>
+#include <stdalign.h>
 
 #define DEFAULT_UNIX_DOMAIN_SOCKET_PATH "/tmp/fswatcher.sock"
 #define UNUSED __attribute__((unused))
+#define UBSAN
+
+#ifdef UBSAN
+#define FREE(X) free(X); X = NULL
+#else
+#define FREE(X) free(X)
+#endif
 
 int safe_readlink(const char *pathname, char **buf)
 {
@@ -34,7 +42,7 @@ int safe_readlink(const char *pathname, char **buf)
     size_t size = st.st_size + 1;
     while (true)
     {
-        free(_buf);
+        FREE(_buf);
         _buf = (char *) malloc(size);
         assert(NULL != _buf);
         ssize_t linksize = readlink(pathname, _buf, size);
@@ -124,8 +132,13 @@ int bind_to_unix_domain_socket(char *path)
 
 char *filepath_from_fanotify_even_metadata(struct fanotify_event_metadata *metadata, int mount_fd) 
 {
-
+#ifdef UBSAN
+    struct fanotify_event_metadata _metadata;
+    memcpy(&_metadata, metadata, sizeof(_metadata));
+    uintptr_t next_metadata = (uintptr_t) metadata + _metadata.event_len;
+#else
     uintptr_t next_metadata = (uintptr_t)metadata + metadata->event_len;
+#endif
     struct fanotify_event_info_fid *info_fd = (struct fanotify_event_info_fid *)(metadata + 1);
     char *full_path = NULL;
     while ((uintptr_t) info_fd < next_metadata)
@@ -158,7 +171,7 @@ char *filepath_from_fanotify_even_metadata(struct fanotify_event_metadata *metad
             //printf("DFID_NAME: %s\n", name);
             full_path = (char *) malloc(strlen(path) + strlen(name) + 2);
             sprintf(full_path, "%s/%s", path, name);
-            free(path);
+            FREE(path);
             //printf("Full path: %s\n", full_path);
         }
         else if (info_fd->hdr.info_type == FAN_EVENT_INFO_TYPE_FID)
@@ -194,6 +207,9 @@ typedef struct json_entry_t {
     STAILQ_ENTRY(json_entry_t) entries;
 } json_entry_t;
 
+
+//TODO: Need to have the ability to append to existing buffer if it hasn't been sent yet
+//TODO: Need to keep track of how many bytes have been read
 typedef struct refcounted_uv_buffer_t {
     int refcount;
     uv_buf_t buf;
@@ -215,8 +231,8 @@ void refcounted_uv_buffer_ref(refcounted_uv_buffer_t *buf){
 void refcounted_uv_buffer_unref(refcounted_uv_buffer_t *buf){
     buf->refcount--;
     if (buf->refcount == 0){
-        free(buf->buf.base);
-        free(buf);
+        FREE(buf->buf.base);
+        FREE(buf);
     }
 }
 
@@ -252,7 +268,7 @@ cJSON * loop_pop_json(uv_loop_t *loop)
     }
     cJSON *json = entry->json;
     STAILQ_REMOVE_HEAD(&state->json_queue, entries);
-    free(entry);
+    FREE(entry);
     return json;
 }
 
@@ -315,7 +331,7 @@ void loop_remove_client(uv_loop_t *loop, int client)
 
 void free_handle(uv_handle_t *handle)
 {
-    free(handle);
+    FREE(handle);
 }
 
 #define UV_TERMINATE_LOOP(loop, reason) \
@@ -351,6 +367,7 @@ void on_client_writeable(uv_poll_t *handle, UNUSED int status, UNUSED int events
 void send_jsons(uv_idle_t *handle)
 {
     uv_loop_t *loop = handle->loop;
+    printf("Loop %p\n", (void *) loop);
     loop_state_t *loop_state = (loop->data);
     cJSON *json = loop_pop_json(loop);
     if (json == NULL)
@@ -374,10 +391,24 @@ void send_jsons(uv_idle_t *handle)
         }
         printf("Preparing Sending to client %d\n", *client);
         uv_poll_t *req = (uv_poll_t *) malloc(sizeof(uv_poll_t));
-        uv_poll_init(loop, req, *client);
-        req->u.fd = *client;
+        printf("0 Loop: %p\n", (void *) loop);
+        printf("1 Req: %p  Req->loop: %p\n", (void *) req, (void *) req->loop);
+        int pollret = uv_poll_init(loop, req, *client);
+
+        // TODO: Need to append to existing buffer if it hasn't been sent yet
+        if (pollret != 0)
+        {
+            printf("Failed to init poll for FD: %d (already being monitored)\n", *client);
+            printf("uv_poll_init: %s\n", uv_strerror(pollret));
+            abort();
+        }
+        printf("2 Req: %p  Req->loop: %p\n", (void *) req, (void *) req->loop);
+        req->u.fd  = *client;
         req->data = buf;
+        printf("3 Req: %p  Req->loop: %p\n", (void *) req, (void *) req->loop);
         refcounted_uv_buffer_ref(buf);
+        printf("4 Req: %p  Req->loop: %p\n", (void *) req, (void *) req->loop);
+
         uv_poll_start(req, UV_WRITABLE, on_client_writeable);
         client++;
     }
@@ -406,18 +437,30 @@ void on_unix_domain_connection_attempt(uv_poll_t *handle, UNUSED int status, UNU
 }
 
 
-void on_fs_event(uv_poll_t *handle, UNUSED int status, UNUSED int events)
+void __attribute__((no_sanitize("alignment", "undefined"))) on_fs_event(uv_poll_t *handle, UNUSED int status, UNUSED int events)
 {
         loop_state_t *loop_state = (loop_state_t *) handle->loop->data;
-        char buf[4096];
+        alignas(8) char buf[256];
         int buflen = read(handle->u.fd, buf, sizeof(buf));
-        struct fanotify_event_metadata *metadata = (struct fanotify_event_metadata *)  buf;
+        struct fanotify_event_metadata *metadata_itor = (struct fanotify_event_metadata *)  buf;
         //printf("Read %d bytes\n", buflen);
         cJSON *json = cJSON_CreateObject();
         cJSON *json_events = cJSON_CreateArray();
         cJSON_AddItemToObject(json, "events", json_events);
-        while (FAN_EVENT_OK(metadata, buflen))
+        printf("Buff Address: %p Bufflen: %d\n",buf,  buflen);
+#ifdef UBSAN
+        struct fanotify_event_metadata _metadata;
+        while (memcpy(&_metadata, metadata_itor, sizeof(_metadata)) && FAN_EVENT_OK(&_metadata, buflen))
+#else
+        while (FAN_EVENT_OK(metadata_itor, buflen))
+#endif
         {
+
+#ifdef UBSAN
+            struct fanotify_event_metadata *metadata = &_metadata;
+#else
+            struct fanotify_event_metadata *metadata = metadata_itor;
+#endif
             if (metadata->vers != FANOTIFY_METADATA_VERSION)
             {
                 printf("Wrong metadata version: %d\n", metadata->vers);
@@ -425,7 +468,8 @@ void on_fs_event(uv_poll_t *handle, UNUSED int status, UNUSED int events)
             }
             assert(metadata->fd == FAN_NOFD);
 
-            char *filepath = filepath_from_fanotify_even_metadata(metadata, ((loop_state_t *) handle->loop->data)->fs_fd);
+            char *filepath = filepath_from_fanotify_even_metadata(metadata_itor, ((loop_state_t *) handle->loop->data)->fs_fd);
+
             if (filepath == NULL)
             {
                 printf("Failed to get filepath\n");
@@ -462,8 +506,9 @@ void on_fs_event(uv_poll_t *handle, UNUSED int status, UNUSED int events)
             cJSON_AddStringToObject(json_event, "operation", operation_type_to_string[op]);
             cJSON_AddItemToArray(json_events, json_event);
 loop_end:
-            free(filepath);
-            metadata = FAN_EVENT_NEXT(metadata, buflen);
+            FREE(filepath);
+            metadata_itor = FAN_EVENT_NEXT(metadata_itor, buflen);
+            printf("Attempting another loop\n");
 
         }
         if (cJSON_GetArraySize(json_events) == 0)
@@ -543,11 +588,12 @@ int main(int argc, char **argv) {
     {
         strcat(compare_path, "/");
     }
-    free(canonical_path);
+    FREE(canonical_path);
 
     int fs_fd = open(path, O_DIRECTORY | O_RDONLY);
     if (fs_fd == -1)
     {
+        FREE(compare_path);
         printf("Failed to open filesystem\n");
         perror("open");
         return 1;
@@ -555,12 +601,14 @@ int main(int argc, char **argv) {
     int fd = fanotify_init(FAN_CLASS_NOTIF | FAN_REPORT_FID | FAN_REPORT_DFID_NAME | FAN_UNLIMITED_QUEUE, O_RDONLY);
     if (fd == -1)
     {
+        FREE(compare_path);
         printf("Failed to initialize fanotify\n");
         perror("fanotify_init");
         return 1;
     }
     if (fanotify_mark(fd, FAN_MARK_ADD | FAN_MARK_FILESYSTEM, FAN_CLOSE_WRITE | FAN_DELETE | FAN_MOVE, 0, path) != 0)
     {
+        FREE(compare_path);
         printf("Failed to add watch\n");
         perror("fanotify_mark");
         return 1;
@@ -618,7 +666,7 @@ int main(int argc, char **argv) {
         }
     }
 
-    free(loop_state.clients);
+    FREE(loop_state.clients);
     loop_state.clients = NULL;
 
     while (loop_has_jsons(loop))
@@ -626,7 +674,7 @@ int main(int argc, char **argv) {
         cJSON *json = loop_pop_json(loop);
         cJSON_Delete(json);
     }
-    free(loop_state.compare_path);
+    FREE(loop_state.compare_path);
 
     close(listenfd);
     close(fd);
@@ -638,7 +686,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    free(loop);
+    FREE(loop);
 
     return 0;
 

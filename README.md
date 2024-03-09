@@ -71,4 +71,5 @@ cp build/watcher .
 5. (Optional) Make the binary setuid
 ```bash
 sudo chown root watcher
+sudo chmod +s watcher
 ```
