@@ -235,7 +235,7 @@ async def on_demand_watcher(q: FinishableQueue[str], clamavdb: ClamAVDB, *, reco
             for file_event_dict in watch_data["events"]:
                 path = file_event_dict["path"]
                 operation = file_event_dict["operation"]
-                if operation == "close_for_write" or operation == "move_to":
+                if operation == "close_for_write" or operation == "move_to" or operation == "multiple":
                     await scan_manager.schedule_file_scan(path)
                 elif operation == "remove" or operation == "move_from":
                     if not path.startswith('/tmp'):
@@ -293,7 +293,7 @@ async def main():
 
 
     if args.watch:
-        watcher_task = asyncio.create_task(on_demand_watcher(files_to_scan,clamavdb))
+        watcher_task = asyncio.create_task(on_demand_watcher(files_to_scan,clamavdb, reconnect=True))
     
 
     if args.path is not None:
