@@ -95,15 +95,15 @@ func NewUnixDomainServer(path string, watcher *fanotify.FSWatcher) (*UnixDomainS
 }
 
 func main() {
-	path := "/target"
+	flag.Parse()
 	if flag.NArg() != 1 {
 		fmt.Printf("Invalid number of arguments: %d\n", flag.NArg())
 		fmt.Println("Usage: watcher [flags] <path>")
 		flag.PrintDefaults()
-		//os.Exit(1)
+		os.Exit(1)
 	}
 
-	//path := flag.Arg(0)
+	path := flag.Arg(0)
 	watcher, err := fanotify.NewFSWatcher(path, true)
 	if err != nil {
 		fmt.Println(err)

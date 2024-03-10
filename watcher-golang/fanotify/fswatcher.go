@@ -391,11 +391,11 @@ func process_event_info(mountFD int, info_itor unsafe.Pointer, bufferSize int) (
 		if err != nil {
 			fmt.Printf("Error parsing DFID_NAME: %s\n", err)
 		} else {
-			if _dirpath != nil {
-				fmt.Printf("Filepath: %s/%s\n", *_dirpath, _filename)
-			} else {
-				fmt.Printf("Filepath: !!!NODIRPATH!!!/%s\n", _filename)
-			}
+			// if _dirpath != nil {
+			// 	fmt.Printf("Filepath: %s/%s\n", *_dirpath, _filename)
+			// } else {
+			// 	fmt.Printf("Filepath: !!!NODIRPATH!!!/%s\n", _filename)
+			// }
 			dirpath = _dirpath
 			filename = _filename
 		}
@@ -453,11 +453,7 @@ func (w *FSWatcher) ParseEventBuffer(buff []byte) ([]Event, error) {
 			fmt.Println("!!!!!!!! Queue overflow !!!!!!!")
 			continue
 		}
-		event, err := parseEventMask(metadata.Mask)
-		if err != nil {
-			panic(err)
-		}
-		fmt.Printf("Event: %v\n", event)
+
 		metadata_bytes_left := int(metadata.Event_len) - int(FAN_EVENT_METADATA_LEN)
 		info_itor := unsafe.Pointer(nil)
 		info_count := 0
@@ -478,13 +474,19 @@ func (w *FSWatcher) ParseEventBuffer(buff []byte) ([]Event, error) {
 		}
 		if filename != "" {
 			if w.allowPath(dirpath) {
-				results = append(results, Event{EventMask: metadata.Mask, Dirpath: dirpath, Filename: filename})
+				e := Event{EventMask: metadata.Mask, Dirpath: dirpath, Filename: filename}
+				results = append(results, e)
+				color.Blue(e.String())
 			} else {
+				var message string
+				actionstrs, _ := parseEventMask(metadata.Mask)
+				actionstr := fmt.Sprintf("%v", actionstrs)
 				if dirpath != nil {
-					fmt.Printf("Ignoring event for %s/%s\n", *dirpath, filename)
+					message = fmt.Sprintf("Ignoring event for %s %s/%s\n", actionstr, *dirpath, filename)
 				} else {
-					fmt.Printf("Ignoring event for !!!NODIRPATH!!!/%s\n", filename)
+					message = fmt.Sprintf("Ignoring event for %s !!!NODIRPATH!!!/%s\n", actionstr, filename)
 				}
+				color.Cyan(message)
 			}
 		} else {
 			panic("No filepath")
