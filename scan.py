@@ -167,6 +167,8 @@ class DeferredScanManager:
     async def start(self):
         async def reaper():
             while True:
+                while len(self.scans) == 0:
+                    await asyncio.sleep(1)
                 completed, _ = await asyncio.wait(
                     self.scans.values(), return_when=asyncio.FIRST_COMPLETED
                 )
