@@ -7,6 +7,8 @@ import (
 	os "os"
 	"os/signal"
 
+	"github.com/fatih/color"
+
 	"github.com/walterschell/clamav-dbscan/watcher/fanotify"
 )
 
@@ -59,25 +61,34 @@ func NewUnixDomainServer(path string, watcher *fanotify.FSWatcher) (*UnixDomainS
 		for {
 			conn, err := socket.Accept()
 			if err != nil {
+				if err.(*net.OpError).Err.Error() == "use of closed network connection" {
+					return
+				}
 				fmt.Println(err)
 				continue
 			}
-			fmt.Printf("Accepted connection %v\n", conn)
-			go func() {
+			color.Green("Accepted connection %v\n", conn)
+
+			go func(conn net.Conn) {
 				defer conn.Close()
 				subscription := watcher.AddJsonSubscription()
 				defer subscription.Close()
 				for {
 					select {
 					case events := <-subscription.Channel():
-						_, err := conn.Write(events)
+						sz, err := conn.Write(events)
 						if err != nil {
 							fmt.Println(err)
+							color.Yellow("Closing connection %v\n", conn)
 							return
 						}
+						if sz != len(events) {
+							color.Red("Failed to write all events: %d != %d\n", sz, len(events))
+						}
+
 					}
 				}
-			}()
+			}(conn)
 		}
 	}()
 	return &UnixDomainServer{socket}, nil

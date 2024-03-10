@@ -6,7 +6,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func parseEventMask(mask uint64) (string, error) {
+func parseEventMask(mask uint64) ([]string, error) {
 	var events []string
 	if mask&unix.FAN_ACCESS != 0 {
 		events = append(events, "ACCESS")
@@ -39,8 +39,7 @@ func parseEventMask(mask uint64) (string, error) {
 		events = append(events, "EVENT_ON_CHILD")
 	}
 	if mask&unix.FAN_CLOSE != 0 {
-		// Less specific than CLOSE_WRITE and CLOSE_NOWRITE
-		//events = append(events, "CLOSE")
+		events = append(events, "CLOSE")
 	}
 	if mask&unix.FAN_OPEN_EXEC_PERM != 0 {
 		events = append(events, "OPEN_EXEC_PERM")
@@ -58,8 +57,7 @@ func parseEventMask(mask uint64) (string, error) {
 		events = append(events, "DELETE_SELF")
 	}
 	if mask&unix.FAN_MOVE != 0 {
-		// Less specific than MOVED_FROM and MOVED_TO
-		//events = append(events, "MOVE")
+		events = append(events, "MOVE")
 	}
 	if mask&unix.FAN_MOVED_FROM != 0 {
 		events = append(events, "MOVED_FROM")
@@ -75,12 +73,10 @@ func parseEventMask(mask uint64) (string, error) {
 		events = append(events, "ATTRIB")
 	}
 	if len(events) == 0 {
-		return "", fmt.Errorf("No events found for mask: %d", mask)
+		return nil, fmt.Errorf("No events found for mask: %d", mask)
 	}
-	if len(events) > 1 {
-		return "", fmt.Errorf("Multiple events found for mask: %d %v", mask, events)
-	}
-	return events[0], nil
+
+	return events, nil
 
 }
 

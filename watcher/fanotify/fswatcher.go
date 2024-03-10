@@ -22,7 +22,7 @@ func (e *Event) Action() string {
 	if err != nil {
 		panic(err)
 	}
-	return result
+	return fmt.Sprintf("%v", result)
 }
 
 func (e *Event) ActionSimplified() string {
@@ -123,6 +123,11 @@ func NewFSWatcher(path string, onlyMathing bool) (*FSWatcher, error) {
 	fmt.Printf("Watching %s for %s\n", watchpath, path)
 	comparePathPrefix := watchpath + "/"
 	comparePath := comparePathPrefix[:len(comparePathPrefix)-1]
+	// Note: We require FID and DFID to be able to catch
+	// file renames and moves, however this means sometimes
+	// we can't resolve the parent directory of the file because
+	// it has been moved or deleted. This is a limitation of
+	// fanotify, file_handles, and open_by_handle_at.
 	fd, err := unix.FanotifyInit(unix.FAN_CLASS_NOTIF|
 		unix.FAN_REPORT_FID|
 		unix.FAN_REPORT_DFID_NAME|
@@ -342,9 +347,7 @@ func parse_DFID_NAME(mountFD int, data []byte) (dirpath *string, filename string
 
 	fd, err := unix.OpenByHandleAt(mountFD, file_handle, unix.O_RDONLY)
 	if err != nil {
-		fmt.Printf("Error Type: %T\n", err)
-		fmt.Printf("Handle bytes: %s\n", asciify(file_handle_data))
-		panic(err)
+		//fmt.Printf("Error Type: %T\n", err)
 		errno, ok := err.(unix.Errno)
 		if ok {
 			if errno == unix.ESTALE {
